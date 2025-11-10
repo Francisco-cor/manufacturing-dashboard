@@ -2,12 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import Chart from "chart.js/auto";
 
 type DataPoint = {
+  machineId: string;        // e.g. "ASSEMBLY-LINE-1"
+  timestamp: string;        // ISO string
+  rpm: number;              // e.g. 6123.4
+  temperature: number;      // °C
+  status: "RUNNING" | "ALERT";
+  alert?: { type: string; level: string };
+};
+
+type Alarm = {
   machineId: string;
-  timestamp: string; // ISO
+  timestamp: string;
   rpm: number;
   temperature: number;
-  status: string;
-  alert?: { type: string; level: string };
+  alert: { type: string; level: string };
 };
 
 const RPM_THRESHOLD = 6000;
@@ -15,23 +23,30 @@ const TEMP_THRESHOLD = 90;
 const WINDOW = 60;
 
 export default function App() {
+  // estado UI
   const [data, setData] = useState<DataPoint | null>(null);
   const [alert, setAlert] = useState<{ type: string; level: string } | null>(null);
+  const [alarms, setAlarms] = useState<Alarm[]>([]);
 
+  // canvases + chart instances
   const rpmCanvas = useRef<HTMLCanvasElement>(null);
   const tempCanvas = useRef<HTMLCanvasElement>(null);
   const rpmChart = useRef<Chart | null>(null);
   const tempChart = useRef<Chart | null>(null);
 
-  // Buffers crudos
-  const labelsRef = useRef<string[]>([]);
-  const timesRef = useRef<number[]>([]); // epoch ms
+  // buffers RPM (labels/tiempos independientes)
+  const labelsRpmRef = useRef<string[]>([]);
+  const timesRpmRef = useRef<number[]>([]);
   const rpmRef = useRef<number[]>([]);
+
+  // buffers Temp (labels/tiempos independientes)
+  const labelsTempRef = useRef<string[]>([]);
+  const timesTempRef = useRef<number[]>([]);
   const tempRef = useRef<number[]>([]);
 
   const trim = (arr: any[]) => { while (arr.length > WINDOW) arr.shift(); };
 
-  // Segment color: rojo/naranja solo si AMBOS extremos superan el umbral
+  // --- segment coloring: rojo/naranja solo si ambos extremos > umbral
   const overUnder = (thr: number, over: string, under: string) => (ctx: any) => {
     const y0 = ctx.p0?.parsed?.y;
     const y1 = ctx.p1?.parsed?.y;
@@ -39,7 +54,7 @@ export default function App() {
     return (y0 >= thr && y1 >= thr) ? over : under;
   };
 
-  // Inserta punto de cruce exacto con el umbral entre (t0,y0)-(t1,y1)
+  // --- inserta punto de cruce para cortar el tramo justo en el umbral
   function maybeInsertCrossing(
     times: number[], labels: string[], values: number[],
     t1: number, label1: string, y1: number, threshold: number
@@ -52,26 +67,25 @@ export default function App() {
     const y0 = values[len - 1];
     const t0 = times[len - 1];
 
-    const crosses = (y0 - threshold) * (y1 - threshold) < 0; // signos opuestos => cruza
+    const crosses = (y0 - threshold) * (y1 - threshold) < 0;
     if (!crosses) {
       times.push(t1); labels.push(label1); values.push(y1);
       return;
     }
 
-    // Interpolación lineal para el cruce exacto
-    // y = y0 + r*(y1 - y0) = threshold => r = (threshold - y0)/(y1 - y0)
+    // y = y0 + r*(y1 - y0) = threshold  => r = (threshold - y0)/(y1 - y0)
     const r = (threshold - y0) / (y1 - y0);
     const tc = t0 + r * (t1 - t0);
     const labelCross = new Date(tc).toLocaleTimeString("en-GB", {
       hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit"
     });
 
-    // Inserta primero el punto de cruce al umbral
+    // inserta cruz y luego el punto real
     times.push(tc); labels.push(labelCross); values.push(threshold);
-    // Luego el punto real
     times.push(t1); labels.push(label1); values.push(y1);
   }
 
+  // ---- WebSocket feed (un solo WS, actualiza ambas series con buffers separados)
   useEffect(() => {
     const host = location.hostname === "localhost" ? "localhost" : "backend";
     const ws = new WebSocket(`ws://${host}:4000`);
@@ -81,33 +95,32 @@ export default function App() {
       setData(msg);
       setAlert(msg.alert ?? null);
 
-      // Tiempos/labels del punto entrante
       const t1 = new Date(msg.timestamp).getTime();
       const label1 = msg.timestamp.slice(11, 19);
 
-      // RPM con posible inserción de cruce
-      maybeInsertCrossing(timesRef.current, labelsRef.current, rpmRef.current, t1, label1, msg.rpm, RPM_THRESHOLD);
-      // Temperatura con posible inserción de cruce
-      maybeInsertCrossing(timesRef.current, labelsRef.current, tempRef.current, t1, label1, msg.temperature, TEMP_THRESHOLD);
+      // RPM: inserción de cruce y actualización de ventana
+      maybeInsertCrossing(timesRpmRef.current, labelsRpmRef.current, rpmRef.current,
+        t1, label1, msg.rpm, RPM_THRESHOLD);
+      trim(timesRpmRef.current); trim(labelsRpmRef.current); trim(rpmRef.current);
 
-      // Ajuste de ventana (todas alineadas por índice)
-      trim(timesRef.current); trim(labelsRef.current);
-      trim(rpmRef.current); trim(tempRef.current);
+      // Temp: inserción de cruce y actualización de ventana
+      maybeInsertCrossing(timesTempRef.current, labelsTempRef.current, tempRef.current,
+        t1, label1, msg.temperature, TEMP_THRESHOLD);
+      trim(timesTempRef.current); trim(labelsTempRef.current); trim(tempRef.current);
 
       // Actualiza charts
       if (rpmChart.current) {
         const c = rpmChart.current;
-        c.data.labels = [...labelsRef.current];
-        // dataset[0]: señal; dataset[1]: línea de umbral
-        c.data.datasets[0].data = [...rpmRef.current];
-        c.data.datasets[1].data = new Array(labelsRef.current.length).fill(RPM_THRESHOLD);
+        c.data.labels = [...labelsRpmRef.current];
+        c.data.datasets[0].data = [...rpmRef.current]; // señal
+        c.data.datasets[1].data = new Array(labelsRpmRef.current.length).fill(RPM_THRESHOLD); // guía
         c.update();
       }
       if (tempChart.current) {
         const c = tempChart.current;
-        c.data.labels = [...labelsRef.current];
+        c.data.labels = [...labelsTempRef.current];
         c.data.datasets[0].data = [...tempRef.current];
-        c.data.datasets[1].data = new Array(labelsRef.current.length).fill(TEMP_THRESHOLD);
+        c.data.datasets[1].data = new Array(labelsTempRef.current.length).fill(TEMP_THRESHOLD);
         c.update();
       }
     };
@@ -115,7 +128,26 @@ export default function App() {
     return () => ws.close();
   }, []);
 
-  // Init charts (1 dataset de señal + 1 guía punteada por chart)
+  // ---- Polling de /api/alarms (cada 10 s)
+  useEffect(() => {
+    const host = location.hostname === "localhost" ? "localhost" : "backend";
+    const url = `http://${host}:4000/api/alarms`;
+
+    const tick = async () => {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const json: Alarm[] = await res.json();
+        setAlarms(json.slice(-100).reverse()); // últimas primero
+      } catch { /* ignore */ }
+    };
+
+    tick();
+    const id = setInterval(tick, 10000);
+    return () => clearInterval(id);
+  }, []);
+
+  // ---- Init charts (1 dataset señal + 1 guía punteada)
   useEffect(() => {
     if (rpmCanvas.current && !rpmChart.current) {
       rpmChart.current = new Chart(rpmCanvas.current, {
@@ -205,10 +237,7 @@ export default function App() {
       });
     }
 
-    return () => {
-      rpmChart.current?.destroy();
-      tempChart.current?.destroy();
-    };
+    return () => { rpmChart.current?.destroy(); tempChart.current?.destroy(); };
   }, []);
 
   return (
@@ -250,6 +279,39 @@ export default function App() {
           Temperature — threshold: {TEMP_THRESHOLD} °C
         </div>
       </div>
+
+      {/* Tabla de alertas */}
+      <section style={{ marginTop: 32 }}>
+        <h2 style={{ fontSize: "1.2rem", marginBottom: 8 }}>Recent Alarms</h2>
+        {alarms.length === 0 ? (
+          <p style={{ color: "#9ca3af" }}>No alerts registered.</p>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+            <thead>
+              <tr style={{ textAlign: "left", borderBottom: "1px solid #334155" }}>
+                <th style={{ padding: "6px 8px" }}>Time</th>
+                <th style={{ padding: "6px 8px" }}>Type</th>
+                <th style={{ padding: "6px 8px" }}>RPM</th>
+                <th style={{ padding: "6px 8px" }}>Temp °C</th>
+                <th style={{ padding: "6px 8px" }}>Level</th>
+              </tr>
+            </thead>
+            <tbody>
+              {alarms.map((a, i) => (
+                <tr key={i} style={{ borderBottom: "1px solid #1e293b" }}>
+                  <td style={{ padding: "6px 8px", color: "#9ca3af" }}>{a.timestamp.slice(11, 19)}</td>
+                  <td style={{ padding: "6px 8px" }}>{a.alert.type}</td>
+                  <td style={{ padding: "6px 8px" }}>{a.rpm.toFixed(1)}</td>
+                  <td style={{ padding: "6px 8px" }}>{a.temperature.toFixed(1)}</td>
+                  <td style={{ padding: "6px 8px", fontWeight: 700, color: a.alert.level === "CRITICAL" ? "#f87171" : "#facc15" }}>
+                    {a.alert.level}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
     </main>
   );
 }
