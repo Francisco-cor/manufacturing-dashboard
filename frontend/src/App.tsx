@@ -3,51 +3,122 @@ import Chart from "chart.js/auto";
 
 type DataPoint = {
   machineId: string;
-  timestamp: string;
+  timestamp: string; // ISO
   rpm: number;
   temperature: number;
   status: string;
   alert?: { type: string; level: string };
 };
 
+const RPM_THRESHOLD = 6000;
+const TEMP_THRESHOLD = 90;
+const WINDOW = 60;
+
 export default function App() {
   const [data, setData] = useState<DataPoint | null>(null);
   const [alert, setAlert] = useState<{ type: string; level: string } | null>(null);
-  const chartRef = useRef<HTMLCanvasElement>(null);
-  const chartInstance = useRef<Chart | null>(null);
 
-  // WebSocket setup
+  const rpmCanvas = useRef<HTMLCanvasElement>(null);
+  const tempCanvas = useRef<HTMLCanvasElement>(null);
+  const rpmChart = useRef<Chart | null>(null);
+  const tempChart = useRef<Chart | null>(null);
+
+  // Buffers crudos
+  const labelsRef = useRef<string[]>([]);
+  const timesRef = useRef<number[]>([]); // epoch ms
+  const rpmRef = useRef<number[]>([]);
+  const tempRef = useRef<number[]>([]);
+
+  const trim = (arr: any[]) => { while (arr.length > WINDOW) arr.shift(); };
+
+  // Segment color: rojo/naranja solo si AMBOS extremos superan el umbral
+  const overUnder = (thr: number, over: string, under: string) => (ctx: any) => {
+    const y0 = ctx.p0?.parsed?.y;
+    const y1 = ctx.p1?.parsed?.y;
+    if (y0 == null || y1 == null) return under;
+    return (y0 >= thr && y1 >= thr) ? over : under;
+  };
+
+  // Inserta punto de cruce exacto con el umbral entre (t0,y0)-(t1,y1)
+  function maybeInsertCrossing(
+    times: number[], labels: string[], values: number[],
+    t1: number, label1: string, y1: number, threshold: number
+  ) {
+    const len = values.length;
+    if (len === 0) {
+      times.push(t1); labels.push(label1); values.push(y1);
+      return;
+    }
+    const y0 = values[len - 1];
+    const t0 = times[len - 1];
+
+    const crosses = (y0 - threshold) * (y1 - threshold) < 0; // signos opuestos => cruza
+    if (!crosses) {
+      times.push(t1); labels.push(label1); values.push(y1);
+      return;
+    }
+
+    // Interpolación lineal para el cruce exacto
+    // y = y0 + r*(y1 - y0) = threshold => r = (threshold - y0)/(y1 - y0)
+    const r = (threshold - y0) / (y1 - y0);
+    const tc = t0 + r * (t1 - t0);
+    const labelCross = new Date(tc).toLocaleTimeString("en-GB", {
+      hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit"
+    });
+
+    // Inserta primero el punto de cruce al umbral
+    times.push(tc); labels.push(labelCross); values.push(threshold);
+    // Luego el punto real
+    times.push(t1); labels.push(label1); values.push(y1);
+  }
+
   useEffect(() => {
     const host = location.hostname === "localhost" ? "localhost" : "backend";
     const ws = new WebSocket(`ws://${host}:4000`);
+
     ws.onmessage = (e) => {
       const msg: DataPoint = JSON.parse(e.data);
       setData(msg);
-      if (msg.alert) setAlert(msg.alert);
-      else setAlert(null);
+      setAlert(msg.alert ?? null);
 
-      if (chartInstance.current) {
-        const chart = chartInstance.current;
-        const ts = msg.timestamp.slice(11, 19);
-        const dataset = chart.data.datasets[0].data as number[];
-        const labels = chart.data.labels as string[];
+      // Tiempos/labels del punto entrante
+      const t1 = new Date(msg.timestamp).getTime();
+      const label1 = msg.timestamp.slice(11, 19);
 
-        labels.push(ts);
-        dataset.push(msg.rpm);
-        if (labels.length > 60) {
-          labels.shift();
-          dataset.shift();
-        }
-        chart.update();
+      // RPM con posible inserción de cruce
+      maybeInsertCrossing(timesRef.current, labelsRef.current, rpmRef.current, t1, label1, msg.rpm, RPM_THRESHOLD);
+      // Temperatura con posible inserción de cruce
+      maybeInsertCrossing(timesRef.current, labelsRef.current, tempRef.current, t1, label1, msg.temperature, TEMP_THRESHOLD);
+
+      // Ajuste de ventana (todas alineadas por índice)
+      trim(timesRef.current); trim(labelsRef.current);
+      trim(rpmRef.current); trim(tempRef.current);
+
+      // Actualiza charts
+      if (rpmChart.current) {
+        const c = rpmChart.current;
+        c.data.labels = [...labelsRef.current];
+        // dataset[0]: señal; dataset[1]: línea de umbral
+        c.data.datasets[0].data = [...rpmRef.current];
+        c.data.datasets[1].data = new Array(labelsRef.current.length).fill(RPM_THRESHOLD);
+        c.update();
+      }
+      if (tempChart.current) {
+        const c = tempChart.current;
+        c.data.labels = [...labelsRef.current];
+        c.data.datasets[0].data = [...tempRef.current];
+        c.data.datasets[1].data = new Array(labelsRef.current.length).fill(TEMP_THRESHOLD);
+        c.update();
       }
     };
+
     return () => ws.close();
   }, []);
 
-  // Chart initialization
+  // Init charts (1 dataset de señal + 1 guía punteada por chart)
   useEffect(() => {
-    if (chartRef.current && !chartInstance.current) {
-      chartInstance.current = new Chart(chartRef.current, {
+    if (rpmCanvas.current && !rpmChart.current) {
+      rpmChart.current = new Chart(rpmCanvas.current, {
         type: "line",
         data: {
           labels: [],
@@ -55,89 +126,130 @@ export default function App() {
             {
               label: "RPM",
               data: [],
-              borderColor: "#16a34a",
-              backgroundColor: "rgba(22,163,74,0.1)",
+              segment: {
+                borderColor: overUnder(RPM_THRESHOLD, "#dc2626", "#16a34a"),
+                backgroundColor: overUnder(RPM_THRESHOLD, "rgba(220,38,38,0.10)", "rgba(22,163,74,0.10)"),
+              },
               borderWidth: 2,
               tension: 0.3,
+              pointRadius: 0,
+              spanGaps: true,
+              order: 2,
+            },
+            {
+              label: "RPM threshold",
+              data: [],
+              borderColor: "rgba(148,163,184,0.5)",
+              borderDash: [6, 6],
+              pointRadius: 0,
+              borderWidth: 1,
+              tension: 0,
+              spanGaps: true,
+              order: 1,
             },
           ],
         },
         options: {
           animation: false,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
           scales: {
             x: { ticks: { color: "#9ca3af" } },
-            y: { beginAtZero: true, ticks: { color: "#9ca3af" } },
-          },
-          plugins: {
-            legend: { display: false },
+            y: { ticks: { color: "#9ca3af" } },
           },
         },
       });
     }
+
+    if (tempCanvas.current && !tempChart.current) {
+      tempChart.current = new Chart(tempCanvas.current, {
+        type: "line",
+        data: {
+          labels: [],
+          datasets: [
+            {
+              label: "Temperature °C",
+              data: [],
+              segment: {
+                borderColor: overUnder(TEMP_THRESHOLD, "#f59e0b", "#3b82f6"),
+                backgroundColor: overUnder(TEMP_THRESHOLD, "rgba(245,158,11,0.10)", "rgba(59,130,246,0.10)"),
+              },
+              borderWidth: 2,
+              tension: 0.3,
+              pointRadius: 0,
+              spanGaps: true,
+              order: 2,
+            },
+            {
+              label: "Temp threshold",
+              data: [],
+              borderColor: "rgba(148,163,184,0.5)",
+              borderDash: [6, 6],
+              pointRadius: 0,
+              borderWidth: 1,
+              tension: 0,
+              spanGaps: true,
+              order: 1,
+            },
+          ],
+        },
+        options: {
+          animation: false,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: "#9ca3af" } },
+            y: { ticks: { color: "#9ca3af" } },
+          },
+        },
+      });
+    }
+
+    return () => {
+      rpmChart.current?.destroy();
+      tempChart.current?.destroy();
+    };
   }, []);
 
-  // Dynamic color change for alert state
-  useEffect(() => {
-    if (chartInstance.current) {
-      const color = alert ? "#dc2626" : "#16a34a";
-      chartInstance.current.data.datasets[0].borderColor = color;
-      chartInstance.current.update();
-    }
-  }, [alert]);
-
   return (
-    <main
-      style={{
-        padding: 24,
-        fontFamily: "system-ui, sans-serif",
-        backgroundColor: "#0f172a",
-        color: "#f8fafc",
-        minHeight: "100vh",
-      }}
-    >
+    <main style={{
+      padding: 24, fontFamily: "system-ui, sans-serif",
+      backgroundColor: "#0f172a", color: "#f8fafc", minHeight: "100vh",
+    }}>
       <h1 style={{ marginBottom: 16, fontSize: "1.5rem" }}>Manufacturing Dashboard</h1>
 
       {alert && (
-        <div
-          style={{
-            backgroundColor: "#dc2626",
-            color: "white",
-            padding: "10px 16px",
-            borderRadius: 6,
-            marginBottom: 16,
-            animation: "pulse 1s infinite",
-          }}
-        >
+        <div style={{ backgroundColor: "#dc2626", color: "white", padding: "10px 16px", borderRadius: 6, marginBottom: 16 }}>
           ⚠️ ALERT: {alert.type} — Level {alert.level}
         </div>
       )}
 
       {data ? (
         <section style={{ marginBottom: 16 }}>
-          <p>
-            <b>Machine:</b> {data.machineId}
-          </p>
-          <p>
-            <b>RPM:</b> {data.rpm.toFixed(1)} | <b>Temperature:</b>{" "}
-            {data.temperature.toFixed(1)} °C
-          </p>
+          <p><b>Machine:</b> {data.machineId}</p>
+          <p><b>RPM:</b> {data.rpm.toFixed(1)} | <b>Temperature:</b> {data.temperature.toFixed(1)} °C</p>
           <p>
             <b>Status:</b>{" "}
-            <span
-              style={{
-                color: data.status === "ALERT" ? "#f87171" : "#34d399",
-                fontWeight: 600,
-              }}
-            >
+            <span style={{ color: data.status === "ALERT" ? "#f87171" : "#34d399", fontWeight: 600 }}>
               {data.status}
             </span>
           </p>
         </section>
-      ) : (
-        <p>Waiting for telemetry data…</p>
-      )}
+      ) : <p>Waiting for telemetry data…</p>}
 
-      <canvas ref={chartRef} width="800" height="350" />
+      <div style={{ height: 340, marginBottom: 24 }}>
+        <canvas ref={rpmCanvas} />
+        <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 6 }}>
+          RPM — threshold: {RPM_THRESHOLD.toLocaleString()}
+        </div>
+      </div>
+
+      <div style={{ height: 300 }}>
+        <canvas ref={tempCanvas} />
+        <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 6 }}>
+          Temperature — threshold: {TEMP_THRESHOLD} °C
+        </div>
+      </div>
     </main>
   );
 }
