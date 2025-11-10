@@ -1,8 +1,10 @@
 import { render, screen } from '@testing-library/react'
-import '@testing-library/jest-dom'
+import { describe, it, expect } from 'vitest'
 import App from './App'
 
-test('renders title', () => {
-  render(<App />)
-  expect(screen.getByText(/Manufacturing Dashboard/i)).toBeInTheDocument()
+describe('App', () => {
+  it('renders title', () => {
+    render(<App />)
+    expect(screen.getByText(/Manufacturing Dashboard/i)).toBeInTheDocument()
+  })
 })
