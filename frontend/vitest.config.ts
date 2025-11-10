@@ -7,6 +7,6 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test/setup.ts',
-    css: true, // permite importar CSS en componentes sin romper tests
+    css: true,
   },
 })
