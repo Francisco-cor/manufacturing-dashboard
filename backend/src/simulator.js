@@ -11,6 +11,11 @@ export function getAlarms() {
   return alarms;
 }
 
+/** Empties the alarm buffer. Used only in tests. */
+export function clearAlarms() {
+  alarms.length = 0;
+}
+
 /**
  * Appends an alarm and evicts the oldest entry when the buffer is full.
  * @param {typeof alarms[number]} payload

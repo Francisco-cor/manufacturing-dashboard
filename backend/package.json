@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "nodemon index.js",
     "start": "node index.js",
+    "test": "node --test src/simulator.test.js src/routes.test.js",
     "lint": "echo \"(add eslint later)\""
   },
   "dependencies": {

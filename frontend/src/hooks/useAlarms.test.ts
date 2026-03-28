@@ -1,5 +1,5 @@
 import { renderHook, act } from '@testing-library/react';
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { useAlarms } from './useAlarms';
 import type { Alarm } from '../types';
 
@@ -12,32 +12,30 @@ const ALARM: Alarm = {
 };
 
 describe('useAlarms', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it('starts with an empty list', () => {
+  it('starts with an empty list before the first fetch resolves', () => {
+    // Use a promise that never resolves so the initial state is observable
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})));
     const { result } = renderHook(() => useAlarms('http://localhost:4000/api/alarms'));
     expect(result.current.alarms).toHaveLength(0);
   });
 
-  it('fetches on mount and populates the list', async () => {
+  it('populates the list after a successful fetch', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => [ALARM],
     }));
     const { result } = renderHook(() => useAlarms('http://localhost:4000/api/alarms'));
-    await act(async () => { await vi.runAllTimersAsync(); });
+    await act(async () => {});
     expect(result.current.alarms).toHaveLength(1);
     expect(result.current.alarms[0].machineId).toBe('ASSEMBLY-LINE-1');
   });
 
-  it('returns results in reverse-chronological order (last first)', async () => {
+  it('returns results in reverse-chronological order (newest first)', async () => {
     const alarms = [
       { ...ALARM, timestamp: '2024-01-01T00:00:00.000Z' },
       { ...ALARM, timestamp: '2024-01-01T00:01:00.000Z' },
@@ -47,29 +45,30 @@ describe('useAlarms', () => {
       json: async () => alarms,
     }));
     const { result } = renderHook(() => useAlarms('http://localhost:4000/api/alarms'));
-    await act(async () => { await vi.runAllTimersAsync(); });
+    await act(async () => {});
     expect(result.current.alarms[0].timestamp).toBe('2024-01-01T00:01:00.000Z');
   });
 
-  it('handles network errors gracefully (stays empty)', async () => {
+  it('handles network errors gracefully (list stays empty)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network error')));
     const { result } = renderHook(() => useAlarms('http://localhost:4000/api/alarms'));
-    await act(async () => { await vi.runAllTimersAsync(); });
+    await act(async () => {});
     expect(result.current.alarms).toHaveLength(0);
   });
 
-  it('polls on the specified interval', async () => {
+  it('polls again after the interval elapses', async () => {
+    vi.useFakeTimers();
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => [] });
     vi.stubGlobal('fetch', fetchMock);
+
     renderHook(() => useAlarms('http://localhost:4000/api/alarms', 1000));
-    // Initial call on mount
-    await act(async () => { await vi.runAllTimersAsync(); });
-    const callsAfterMount = fetchMock.mock.calls.length;
-    // Advance two more intervals
-    await act(async () => {
-      vi.advanceTimersByTime(2000);
-      await vi.runAllTimersAsync();
-    });
-    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterMount);
+    // Flush the initial call
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const countAfterMount = fetchMock.mock.calls.length;
+
+    // Advance 2 full intervals — advanceTimersByTimeAsync processes timers
+    // without running the infinite setInterval loop to completion
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(countAfterMount);
   });
 });
