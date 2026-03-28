@@ -10,6 +10,7 @@ build
 .vite
 coverage
 
-# Env
+# Env — ignore secrets but always track the example template
 .env
 .env.*
+!.env.example

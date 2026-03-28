@@ -1,18 +1,18 @@
 # --- Build ---
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+# --omit=dev: skip devDependencies in the build layer to reduce image size
+RUN npm ci --omit=dev=false --no-audit --no-fund
 COPY . .
 RUN npm run build
 
 # --- Serve ---
 FROM nginx:1.27-alpine
-# Nginx sirve el build de Vite
 COPY --from=build /app/dist /usr/share/nginx/html
-# Config simple (opcional): gzip ya viene habilitado en alpine modern
+# Mount custom nginx config (SPA routing, gzip, cache, security headers)
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
 
-# Healthcheck http
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD wget -qO- http://localhost/ >/dev/null || exit 1
