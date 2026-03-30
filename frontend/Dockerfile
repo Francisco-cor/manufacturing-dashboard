@@ -1,8 +1,8 @@
 # --- Build ---
-FROM node:22-alpine AS build
+FROM node:22-slim AS build
 WORKDIR /app
 COPY package*.json ./
-# --omit=dev: skip devDependencies in the build layer to reduce image size
+# --omit=dev=false ensures devDependencies (like Vite and TypeScript) are installed for building.
 RUN npm ci --omit=dev=false --no-audit --no-fund
 COPY . .
 RUN npm run build

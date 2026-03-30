@@ -1,120 +1,144 @@
-# Manufacturing Dashboard — React + Node.js (WebSocket)
+# Industrial Telemetry Dashboard
 
-## Overview
-This project simulates a real-time manufacturing monitoring dashboard.
-It consists of a backend PLC simulator (Node.js + WebSocket) and a frontend (React + Chart.js)
-that displays live machine telemetry and alerts.
+[![ci](https://github.com/Francisco-cor/manufacturing-dashboard/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Francisco-cor/manufacturing-dashboard/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![React](https://img.shields.io/badge/React-18-blue?logo=react)](https://react.dev/)
+[![Node.js](https://img.shields.io/badge/Node.js-22-green?logo=node.js)](https://nodejs.org/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)](https://www.docker.com/)
 
-## Architecture
-**Backend:** Node.js + Express + ws  
-**Frontend:** React + Vite + TypeScript  
-**Communication:** WebSocket (real-time) + REST (alert history)  
-**Containerization:** Docker + docker-compose  
+A real-time manufacturing monitoring system designed for high-availability machine telemetry. This project implements a full-stack architecture to simulate, ingest, and visualize critical sensor data from industrial equipment.
+
+## Technical Overview
+
+The system is architected as an event-driven simulation where a **PLC Simulator (Node.js)** generates high-frequency telemetry data via WebSockets, and a **Reactive Dashboard (React + TypeScript)** provides real-time visualization with millisecond precision.
+
+## Tech Stack
+
+- **Frontend:** React, Vite, TypeScript, Chart.js
+- **Backend:** Node.js, Express, `ws` (WebSocket)
+- **Deployment:** Docker, Docker Compose, Nginx
+
+### Visual State Reference
+
+| Operational Mode | Dashboard Preview |
+| :--- | :--- |
+| **Normal Operation** | ![Dashboard Operational](docs/screenshots/dashboard.png) |
+| **Critical Temperature (>90°C)** | ![High Temp Alert](docs/screenshots/high_temp_alert.png) |
+| **Critical RPM (>6000)** | ![High Revs Alert](docs/screenshots/high_revs_alert.png) |
+
+---
+
+## System Architecture
+
+The project follows a decoupled microservices-lite pattern, ensuring that the simulator logic remains independent of the presentation layer.
 
 ```mermaid
-flowchart LR
-  subgraph Frontend [React Dashboard]
-    F1[Chart.js Real-Time Graphs]
-    F2[Alert Table / Notifications]
-  end
+flowchart TD
+    subgraph Frontend [React Intelligence Layer]
+        UI[Chart.js Real-Time Engine]
+        WS_Client[WebSocket Client]
+        API_Client[REST Client]
+    end
 
-  subgraph Backend [Node.js PLC Simulator]
-    B1[Sensor Data Generator]
-    B2[/api/alarms (History)]
-    B3[(In-Memory Alarm Buffer)]
-  end
+    subgraph Backend [Node.js Edge Simulator]
+        PLC[PLC Emulator Core]
+        WS_Server[WebSocket Server]
+        REST_API[Alert History API]
+        Store[(In-Memory Ring Buffer)]
+    end
 
-  F1 <-- WebSocket (telemetry) --> B1
-  F2 <-- REST (GET /api/alarms) --> B2
+    PLC --> WS_Server
+    WS_Server -- Telemetry Stream --> WS_Client
+    WS_Client --> UI
+    PLC -- Alarm Event --> Store
+    Store --> REST_API
+    REST_API -- History Fetch --> API_Client
 ```
 
 ---
 
-## Commands
+## Getting Started
 
-### Backend
+### Local Development
+
+#### 1. Backend Setup
 ```bash
 cd backend
 npm install
 npm run dev
 ```
 
-### Configuración por entorno (backend)
-
-El backend lee variables desde `.env` (usa `.env.example` como base):
-
-| Variable       | Descripción                              | Default |
-|----------------|------------------------------------------|----------|
-| `PORT`         | Puerto HTTP/WS del backend               | `4000`   |
-| `TICK_MS`      | Intervalo de emisión del simulador (ms)  | `3000`   |
-| `ALERT_RPM`    | Umbral de alerta por RPM                 | `6000`   |
-| `ALERT_TEMP`   | Umbral de alerta por temperatura (°C)    | `90`     |
-| `ALARM_BUFFER` | Cantidad máxima de alertas en memoria    | `100`    |
-| `CORS_ORIGINS` | Orígenes permitidos (coma-separado)      | `*`      |
-
-**Healthcheck:**  
-`GET /health` → `{ "status": "ok", "uptime": <segundos>, "timestamp": "..." }`
-
-### Frontend
+#### 2. Frontend Setup
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-### Full stack (Docker Compose)
+### Docker Deployment (Full Stack)
+
+Ensure you have Docker and Docker Compose installed.
+
 ```bash
 docker compose up --build
 ```
+
+**Services:**
+- **Frontend (nginx):** [http://localhost:8080](http://localhost:8080)
+- **Backend (Node.js):** [http://localhost:4000](http://localhost:4000)
 
 ---
 
-## Production (Docker)
+## Configuration
 
-Requisitos: Docker Desktop / Docker Engine.
+The backend reads configuration from a `.env` file (use `.env.example` as a template):
 
-1. Configura `backend/.env` (usa `.env.example` como base).  
-2. Construye y levanta los servicios:
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `PORT` | HTTP/WS server port | `4000` |
+| `TICK_MS` | Simulator emission interval (ms) | `3000` |
+| `ALERT_RPM` | RPM alert threshold | `6000` |
+| `ALERT_TEMP` | Temperature alert threshold (°C) | `90` |
+| `ALARM_BUFFER` | Max alerts in memory | `100` |
+| `CORS_ORIGINS` | Allowed CORS origins (comma-separated) | `*` |
+
+---
+
+## API & Healthchecks
+
+### Healthcheck Validation
+Used by Docker for `service_healthy` status.
 
 ```bash
-docker compose up --build
+curl http://localhost:4000/health
+# → { "status": "ok", "uptime": 42, "timestamp": "2025-11-10T00:00:00.000Z" }
 ```
 
-**Servicios:**
-- **Frontend (nginx):** http://localhost:8080  
-- **Backend (Node.js):** http://localhost:4000  
-- **Healthcheck:** `GET /health` (usado por Docker para `service_healthy`)
-
-El archivo `docker-compose.yml` define `depends_on: condition: service_healthy`, lo que asegura que el frontend no se levante hasta que el backend haya pasado su chequeo de salud.
+### Alert History
+Fetch recent alerts from the in-memory ring buffer.
+`GET /api/alarms`
 
 ---
 
 ## Folder Structure
+
 ```
 manufacturing-dashboard/
-├─ backend/
-│  ├─ index.js
+├─ backend/             # Node.js PLC Simulator
+│  ├─ src/              # Logic & Routes
 │  ├─ Dockerfile
-│  ├─ .env.example
-│  └─ package.json
-├─ frontend/
-│  ├─ src/
-│  ├─ Dockerfile
-│  └─ package.json
-├─ docker-compose.yml
-└─ README.md
+│  └─ .env.example
+├─ frontend/            # React + TypeScript Dashboard
+│  ├─ src/              # Components & Visualizations
+│  └─ Dockerfile
+├─ docs/                # Project Documentation & Assets
+│  └─ screenshots/      # Visual references
+├─ docker-compose.yml   # Orchestration
+└─ README.md            # You are here
 ```
 
 ---
 
-## Healthcheck Validation
-```bash
-curl http://localhost:4000/health
-# → { "status":"ok","uptime":42,"timestamp":"2025-11-10T00:00:00Z" }
-```
+## License
 
----
-
-## Notes
-- This project demonstrates **real-time communication**, **REST integration**, and **container orchestration**.  
-- Designed for production readiness: includes CI/CD support, Docker healthchecks, and separation of concerns between backend and frontend.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

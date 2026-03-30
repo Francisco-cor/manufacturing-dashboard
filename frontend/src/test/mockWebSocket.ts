@@ -13,7 +13,7 @@ export class MockWebSocket {
   onmessage: ((e: MessageEvent<string>) => void) | null = null;
   onclose:   ((e: CloseEvent) => void) | null = null;
   onerror:   ((e: Event) => void) | null = null;
-  send = vi.fn<[string], void>();
+  send = vi.fn<(data: string) => void>();
 
   constructor(url: string) {
     this.url = url;
